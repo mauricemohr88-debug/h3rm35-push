@@ -43,7 +43,10 @@ def test_publisher_discovery_is_fixed_bounded_cached_and_secret_free(monkeypatch
     monkeypatch.setattr(sender,"_cached",None)
     assert sender.publisher_origin() == "https://push.example"
     assert sender.publisher_origin() == "https://push.example"
-    assert calls == ["https://kiablauf.de/h3rm35/push-service.json"]
+    assert len(calls) == 1 and calls[0].full_url == "https://kiablauf.de/h3rm35/push-service.json"
+    assert calls[0].get_method() == "GET" and calls[0].data is None
+    assert dict((key.lower(), value) for key, value in calls[0].header_items()) == {
+        "user-agent": "H3rm35-Push/0.1", "accept": "application/json"}
 
 
 @pytest.mark.parametrize("body", [discovery(schema=True), discovery(enabled=False), discovery(extra="bad"),
@@ -72,6 +75,7 @@ def test_relay_status_never_redirects_or_refreshes_capability(monkeypatch,status
     assert sender.send(item()) == expected
     assert len(calls)==1 and calls[0].full_url == "https://push.example/v1/events"
     assert calls[0].get_header("Authorization") == "Bearer "+"b"*64
+    assert calls[0].get_header("User-agent") == "H3rm35-Push/0.1"
     assert sender.NoRedirect().redirect_request(None,None,302,"",{},"https://evil.example") is None
 
 
@@ -80,9 +84,32 @@ def test_send_accepted_metadata_only(monkeypatch):
     class Opener:
         def open(self,request,timeout):
             assert request.data == item()["payload"].encode()
+            assert request.get_header("User-agent") == "H3rm35-Push/0.1"
+            assert request.get_header("Accept") == "application/json"
             return Response({"event_id":"a"*64,"status":"pending"},202)
     monkeypatch.setattr(sender,"opener",lambda:Opener())
     assert sender.send(item()) == "done"
+
+
+def test_product_identity_on_both_requests_never_leaks_host_capability_to_discovery(monkeypatch):
+    calls = []
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request)
+            assert timeout == 8
+            assert request.get_header("User-agent") == sender.USER_AGENT == "H3rm35-Push/0.1"
+            if request.full_url == sender.DISCOVERY:
+                assert request.get_header("Authorization") is None
+                assert request.get_header("Cookie") is None and request.data is None
+                return Response(discovery())
+            assert request.full_url == "https://push.example/v1/events"
+            assert request.get_header("Authorization") == "Bearer " + "b" * 64
+            assert request.get_header("Cookie") is None
+            return Response({"event_id": "a" * 64, "status": "pending"}, 202)
+    monkeypatch.setattr(sender, "opener", lambda: Opener())
+    monkeypatch.setattr(sender, "_cached", None)
+    assert sender.send(item()) == "done"
+    assert [request.get_method() for request in calls] == ["GET", "POST"]
 
 
 @pytest.fixture

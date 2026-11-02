@@ -90,6 +90,8 @@ The extension reads publisher configuration from the fixed first-party URL
 ambient proxies. Exact schema, HTTPS origin and 2 KB response limit are checked;
 successful discovery is cached at most one hour. No URL comes from registration
 input. No secrets are logged or included in error responses.
+Both configuration reads and event delivery identify the extension honestly as
+`H3rm35-Push/0.1`; they do not impersonate a browser or relax publisher security.
 
 Before emitting, the extension verifies an exact session ID in the active
 profile's read-only `state.db`; no prefix search, default-profile guess or message
@@ -113,7 +115,7 @@ registration, private file checks, stable identity, per-device fan-out/revoke,
 bounded retries/queue, exact profile ownership, fork/content exclusion, deterministic
 SQLite closure, fixed publisher discovery and HTTP authentication/error handling.
 
-Current result: **56 passed** on 2026-11-02 (Python 3.14 fixture). No live host,
+Current result: **57 passed** on 2026-11-02 (Python 3.14 fixture). No live host,
 model API, Apple APNs service or user chat was used by these tests. Full current
 gateway-process execution, real API-created response/question/approval events,
 isolated-plugin-host IPC, physical iPhone delivery and native Windows remain
@@ -132,6 +134,11 @@ not a whole-agent run. Unsupported native Windows starts no background thread.
 The macOS ACL cases include real ACL additions to private pytest-only directory
 and database fixtures plus subprocess failure/timeout/ambiguous-output cases.
 No existing user path or ACL was changed for these checks.
+
+A read-only production check additionally verified the extension's actual urllib
+opener and product User-Agent against both publisher configuration and relay
+health: HTTP 200 JSON, with public v2 enrollment still disabled. This is endpoint
+reachability, not APNs delivery or iPhone acceptance.
 
 Read-only source copies under `tests/upstream-source-3d304a1/` retain the upstream
 MIT license. SHA-256 source identities:

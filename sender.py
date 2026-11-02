@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 
 DISCOVERY = "https://kiablauf.de/h3rm35/push-service.json"
+USER_AGENT = "H3rm35-Push/0.1"
 logger = logging.getLogger("h3rm35.push")
 _cached = None
 _cache_lock = threading.Lock()
@@ -28,7 +29,8 @@ def publisher_origin():
     with _cache_lock:
         if _cached and _cached[0] > time.monotonic():
             return _cached[1]
-        with opener().open(DISCOVERY, timeout=8) as response:
+        request = urllib.request.Request(DISCOVERY, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+        with opener().open(request, timeout=8) as response:
             raw = response.read(2049)
             if response.status != 200 or len(raw) > 2048:
                 raise ValueError("publisher unavailable")
@@ -62,7 +64,8 @@ def send(item):
     except (OSError, ValueError):
         return "retry"
     request = urllib.request.Request(origin+"/v1/events", data=item["payload"].encode(), method="POST",
-                                     headers={"Authorization": "Bearer "+item["host_secret"], "Content-Type": "application/json"})
+                                     headers={"Authorization": "Bearer "+item["host_secret"], "Content-Type": "application/json",
+                                              "User-Agent": USER_AGENT, "Accept": "application/json"})
     try:
         with opener().open(request, timeout=8) as response:
             raw = response.read(2049)
