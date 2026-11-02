@@ -4,10 +4,11 @@ Directory-installed, opt-in Stock Hermes extension for the H3rm35 iPhone app.
 It observes completed turns and human-input requests; it cannot submit messages,
 answer questions, approve tools, change profiles or launch/restart Hermes.
 
-**Early integration release: the publisher's v2 enrollment service is not yet
-enabled for general use.** This repository publishes the host extension only;
-installing it alone does not enable push. The compatible H3rm35 app, publisher
-service and an actual iPhone delivery check are separate release steps.
+**Early integration release:** the compatible H3rm35 flow is initially available
+in internal Build 78 and the publisher enrollment service is enabled. This
+repository publishes the host extension only; installing it alone does not
+enable push. Complete enrollment and physical iPhone delivery through this new
+extension remain separate acceptance checks, not implied by the CI results.
 
 ## Supported contract
 
@@ -33,9 +34,11 @@ inspected read-only at Stock revision
   run behind Stock authentication. Every extension route additionally invokes
   Stock `_require_token`; there is no standalone HTTP server.
 
-Private storage is currently qualified for POSIX (macOS, Linux, WSL). Native
-Windows ACL storage is **not** qualified and fails closed; Unix mode 0600 is not
-presented as a Windows ACL audit.
+Private storage supports POSIX (macOS, Linux, WSL) and native Windows on a local
+fixed NTFS volume with persistent ACLs. Native Windows was tested on Windows
+Server 2022 with CPython 3.12.10 and 3.14.9, pywin32 311. Network drives, other
+filesystems, unsafe ACLs, metadata junctions/reparse points and hardlinks fail
+closed. Unix mode 0600 is never presented as a Windows ACL audit.
 
 ## Install once on your Hermes host
 
@@ -60,9 +63,13 @@ transfer is required by this new path.
 The command and consent behavior are documented in the
 [official Hermes plugin guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins/).
 
-This extension itself has no third-party runtime dependencies: FastAPI is supplied
-by the existing Hermes API host; SQLite, TLS and the worker use Python's standard
-library. No Desktop application or separate user-facing dashboard is required.
+FastAPI is supplied by the existing Hermes API host; SQLite, TLS and the worker
+use Python's standard library. Native Windows additionally uses **pywin32 311**,
+declared with a Windows-only dependency marker. Hermes' normal installer handles
+dependency consent and resolution; this extension never runs pip or installs
+packages from a callback. macOS/Linux/WSL do not import or require pywin32. Missing
+native APIs fail closed before a worker starts. No Desktop application or separate
+user-facing dashboard is required.
 
 ## Wire and trust boundaries
 
@@ -84,6 +91,16 @@ no shell, no inherited environment/proxy settings, a two-second timeout and a
 strict output-size/shape gate. Any ACL or unverifiable metadata fails closed;
 the extension never strips user ACLs. Extended attributes alone are not an ACL.
 This is not a whole-host ACL audit or protection against the host account/admin.
+
+On native Windows, the owner must be the current account. New private storage is
+created with a protected DACL granting only that account and SYSTEM; its directory
+privately inherits permissions for child files. Existing ACLs are verified, never
+repaired. Handle-based checks pin the canonical root, directory, lock, database
+and permanent journal; handles deny deletion/replacement while SQLite is open.
+Only local fixed NTFS is accepted. A native cross-process lock covers the full
+connection lifetime. SQLite sets EXCLUSIVE before recovery, then PERSIST/FULL,
+in-memory temporary storage and mmap disabled. WAL/SHM are rejected. This is not
+a hardware power-loss guarantee or protection from an administrator/current user.
 
 The extension reads publisher configuration from the fixed first-party URL
 `https://kiablauf.de/h3rm35/push-service.json`, without credentials, redirects or
@@ -115,11 +132,15 @@ registration, private file checks, stable identity, per-device fan-out/revoke,
 bounded retries/queue, exact profile ownership, fork/content exclusion, deterministic
 SQLite closure, fixed publisher discovery and HTTP authentication/error handling.
 
-Current result: **57 passed** on 2026-11-02 (Python 3.14 fixture). No live host,
-model API, Apple APNs service or user chat was used by these tests. Full current
-gateway-process execution, real API-created response/question/approval events,
-isolated-plugin-host IPC, physical iPhone delivery and native Windows remain
-separate acceptance checks.
+Current results on 2026-11-02: **98 passed, 4 platform skips** on each real Windows
+runner (CPython 3.12.10 and 3.14.9, Windows Server 2022/NTFS), and **60 passed,
+42 Windows-only skips** on macOS/Python 3.14. The Windows skips are two actual
+macOS ACL cases, the POSIX-mode case and the non-Windows import-boundary case;
+no native Windows storage case was skipped. [Native CI evidence](https://github.com/mauricemohr88-debug/h3rm35-push/actions/runs/41515220833).
+No live Hermes host, model API, Apple APNs service or user chat was used. Full
+current gateway-process execution, real API-created response/question/approval
+events, isolated-plugin-host IPC and physical iPhone delivery remain separate
+acceptance checks. CI qualification is not installation on a user's running PC.
 
 Four bounded tests execute **actual copied upstream source functions**, not
 rewritten contract approximations: the directory API mounter/enabled gate; human
@@ -130,14 +151,24 @@ prove shared registration across default/research/custom-root profile homes.
 Actual `PluginContext` initialization/register/on_unload methods additionally
 register both callbacks and a real idle worker, then dispose all registrations
 and stop that thread. Manager/other runtime components are test doubles; this is
-not a whole-agent run. Unsupported native Windows starts no background thread.
+not a whole-agent run. Missing native Windows APIs start no background thread.
 The macOS ACL cases include real ACL additions to private pytest-only directory
 and database fixtures plus subprocess failure/timeout/ambiguous-output cases.
 No existing user path or ACL was changed for these checks.
 
+Native Windows cases exercise actual DACLs (foreign/null/unprotected/owner and
+inheritance checks without repair), generation-pinned handles, hardlinks,
+junction aliases, journal/sidecar checks, simultaneous first publication, native
+cross-process locks released by process exit, and rollback after an abruptly
+terminated SQLite writer. The actual Store roundtrip covers all three event
+kinds, registration/reopen/revoke and stable identity. API failures retain 503
+storage semantics instead of mislabelling a lock or ACL failure as invalid input.
+The Windows adapter reuses H3rm35's MIT-licensed atomic-storage implementation,
+with a standalone lazy runtime rather than an SSH/Hermes-module dependency.
+
 A read-only production check additionally verified the extension's actual urllib
 opener and product User-Agent against both publisher configuration and relay
-health: HTTP 200 JSON, with public v2 enrollment still disabled. This is endpoint
+health: HTTP 200 JSON. Public v2 enrollment was subsequently enabled. This is endpoint
 reachability, not APNs delivery or iPhone acceptance.
 
 Read-only source copies under `tests/upstream-source-3d304a1/` retain the upstream
