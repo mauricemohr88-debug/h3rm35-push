@@ -1,0 +1,10 @@
+{
+  "name": "h3rm35-push",
+  "label": "H3rm35 Push",
+  "description": "Optional metadata-only iPhone notification registration",
+  "icon": "Bell",
+  "version": "0.1.0",
+  "tab": {"path": "/h3rm35-push", "hidden": true},
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
