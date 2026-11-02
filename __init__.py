@@ -43,7 +43,7 @@ def register(ctx):
         logger.warning("H3rm35 push requires the current human-input observer contract")
         return
     if not supports_private_storage():
-        logger.warning("H3rm35 push native Windows private storage is not qualified; use WSL")
+        logger.warning("H3rm35 push requires available native private storage APIs")
         return
     store = process_store()
     observer = Observer(store)

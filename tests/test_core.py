@@ -35,7 +35,12 @@ def test_private_stable_identity_and_scoped_registration(tmp_path):
     store.enqueue("response", "research", "session-1", "turn-1", now=100)
     item = store.claim(now=100)
     assert item["binding_id"] == second["binding_id"]
-    assert stat_mode(store.path) == 0o600 and stat_mode(tmp_path/"push") == 0o700
+    if os.name == "posix":
+        assert stat_mode(store.path) == 0o600 and stat_mode(tmp_path/"push") == 0o700
+    else:
+        # Actual native ACL/identity verification, not Windows mode bits.
+        with store.connect():
+            pass
 
 
 def stat_mode(path):
@@ -50,6 +55,7 @@ def test_strict_registration(tmp_path, change):
         registration({**data(store), **change})
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX modes; native ACL cases are separate")
 def test_no_symlink_or_shared_store(tmp_path):
     private = tmp_path/"private"
     private.mkdir(mode=0o700)

@@ -169,7 +169,7 @@ def test_older_host_does_not_advertise_unsupported_events(api,monkeypatch):
     asyncio.run(run())
 
 
-def test_native_windows_store_is_explicitly_not_qualified(api,monkeypatch):
+def test_missing_native_storage_primitives_fail_closed(api,monkeypatch):
     app,_,mod=api
     monkeypatch.setattr(mod.core,"supports_private_storage",lambda:False)
     async def run():
@@ -177,4 +177,21 @@ def test_native_windows_store_is_explicitly_not_qualified(api,monkeypatch):
             response=await client.get("/api/plugins/h3rm35-push/capabilities",headers={"Authorization":"Bearer existing-hermes-session"})
             assert response.status_code==503
             assert response.json()=={"detail":"native_windows_storage_not_supported"}
+    asyncio.run(run())
+
+
+def test_native_store_failure_is_unavailable_not_invalid_input(api,monkeypatch):
+    app, _, mod = api
+    def unavailable():
+        raise mod.core.PrivateStorageError("fixture unavailable")
+    monkeypatch.setattr(mod.core, "process_store", unavailable)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test") as client:
+            headers = {"Authorization":"Bearer existing-hermes-session"}
+            responses = [await client.get("/api/plugins/h3rm35-push/capabilities",headers=headers),
+                         await client.post("/api/plugins/h3rm35-push/register",headers=headers,json={}),
+                         await client.delete("/api/plugins/h3rm35-push/registrations/"+str(uuid.uuid4()),headers=headers)]
+            for response in responses:
+                assert response.status_code == 503
+                assert response.json() == {"detail":"private_store_unavailable"}
     asyncio.run(run())

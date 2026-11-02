@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -22,6 +24,31 @@ SESSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
 MAX_REGISTRATIONS = 500
 MAX_OUTBOX = 2_000
 EVENT_LIFETIME = 300
+_WINDOWS_IMPORT_LOCK = threading.RLock()
+
+
+class PrivateStorageError(RuntimeError):
+    """Native storage cannot be used; not a rejected registration input."""
+
+
+def windows_files():
+    # Stock also loads this core as a standalone API module, outside the plugin
+    # package. Give the sibling adapter a fixed package for its relative imports.
+    name = __name__ + "_windows_storage"
+    with _WINDOWS_IMPORT_LOCK:
+        if name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                name, Path(__file__).with_name("windows_files.py"),
+                submodule_search_locations=[str(Path(__file__).parent)],
+            )
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(name, None)
+                raise
+        return sys.modules[name]
 
 
 def assert_no_extended_acl(path):
@@ -73,10 +100,18 @@ def registration(value):
 class Store:
     def __init__(self, directory: Path):
         if not supports_private_storage():
-            # Windows mode bits are not an ACL proof. Native Windows needs an
-            # independently qualified private-store adapter; WSL is POSIX.
-            raise ValueError("private POSIX storage required")
+            raise ValueError("native private storage is unavailable")
         self.directory = Path(directory).absolute()
+        self.path = self.directory / "registrations.sqlite"
+        self._windows_identity = None
+        if os.name == "nt":
+            with self._open_windows(initializing=True) as opened:
+                self._windows_identity = opened
+                # SQLite must reopen the exact canonical root guarded by the
+                # native handles, never a retargetable junction alias.
+                self.directory = opened.home / self.directory.name
+                self.path = self.directory / "registrations.sqlite"
+            return
         self.directory.mkdir(mode=0o700, parents=False, exist_ok=True)
         info = self.directory.lstat()
         if (self.directory.resolve() != self.directory or not stat.S_ISDIR(info.st_mode)
@@ -84,7 +119,6 @@ class Store:
             raise ValueError("private owned notification directory required")
         # macOS ACLs can grant access despite mode0700; never strip user ACLs.
         assert_no_extended_acl(self.directory)
-        self.path = self.directory / "registrations.sqlite"
         try:
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             os.close(fd)
@@ -96,7 +130,11 @@ class Store:
             raise ValueError("private owned notification store required")
         assert_no_extended_acl(self.path)
         with self.connect() as db:
-            db.executescript("""
+            self._schema(db)
+
+    @staticmethod
+    def _schema(db):
+        db.executescript("""
                 CREATE TABLE IF NOT EXISTS identity(id INTEGER PRIMARY KEY CHECK(id=1), host_id TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS registrations(
                     binding_id TEXT PRIMARY KEY, host_secret TEXT NOT NULL, kinds TEXT NOT NULL);
@@ -105,11 +143,68 @@ class Store:
                     payload TEXT NOT NULL, expires_at REAL NOT NULL, due REAL NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0,
                     FOREIGN KEY(binding_id) REFERENCES registrations(binding_id) ON DELETE CASCADE);
-            """)
-            db.execute("INSERT OR IGNORE INTO identity VALUES (1,?)", (str(uuid.uuid4()),))
+        """)
+        db.execute("INSERT OR IGNORE INTO identity VALUES (1,?)", (str(uuid.uuid4()),))
+
+    @staticmethod
+    def _configure_windows(db):
+        # EXCLUSIVE precedes schema/journal inspection so crash recovery never
+        # deletes the journal while its verified no-delete handle is pinned.
+        if db.execute("PRAGMA locking_mode=EXCLUSIVE").fetchone()[0] != "exclusive":
+            raise ValueError("private store locking unavailable")
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("PRAGMA temp_store=MEMORY")
+        db.execute("PRAGMA mmap_size=0")
+        if db.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
+            raise ValueError("private store WAL is unsupported")
+        if db.execute("PRAGMA journal_mode=PERSIST").fetchone()[0] != "persist":
+            raise ValueError("private store journaling unavailable")
+        if (db.execute("PRAGMA synchronous").fetchone()[0] != 2
+                or db.execute("PRAGMA temp_store").fetchone()[0] != 2
+                or db.execute("PRAGMA mmap_size").fetchone()[0] != 0):
+            raise ValueError("private store durability unavailable")
+
+    @classmethod
+    def _initialize_windows(cls, path):
+        db = sqlite3.connect(path.as_uri()+"?mode=rw", uri=True, timeout=0.05)
+        try:
+            cls._configure_windows(db)
+            with db:
+                cls._schema(db)
+        finally:
+            db.close()
+
+    @contextmanager
+    def _open_windows(self, *, initializing=False):
+        files = windows_files()
+        try:
+            with files.open_storage(
+                self.directory.parent, self.directory.name, self.path.name, "store.lock",
+                initialize=self._initialize_windows if initializing else None,
+                expected_identity=self._windows_identity, lock_timeout=0.05,
+            ) as opened:
+                yield opened
+        except files.WindowsStorageError:
+            raise PrivateStorageError("native private store is unavailable") from None
 
     @contextmanager
     def connect(self):
+        if os.name == "nt":
+            with self._open_windows() as opened:
+                path = opened.home / self.directory.name / self.path.name
+                db = sqlite3.connect(path.as_uri()+"?mode=rw", uri=True, timeout=0.05)
+                try:
+                    self._configure_windows(db)
+                    db.row_factory = sqlite3.Row
+                    db.execute("PRAGMA foreign_keys=ON")
+                    with db:
+                        yield db
+                    opened.verify()
+                finally:
+                    db.close()
+                opened.verify()
+                opened.flush()
+            return
         db = sqlite3.connect(self.path, timeout=0.05)
         try:
             db.row_factory = sqlite3.Row
@@ -205,7 +300,15 @@ def supported_host():
 
 
 def supports_private_storage():
-    return os.name == "posix"
+    if os.name == "posix":
+        return True
+    if os.name == "nt":
+        try:
+            windows_files().require_native()
+            return True
+        except (ImportError, OSError, RuntimeError, ValueError):
+            return False
+    return False
 
 
 def event_identity(session_id):
@@ -221,7 +324,8 @@ def event_identity(session_id):
     if not path.is_file():
         return None
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or getattr(info, "st_file_attributes", 0) & 0x400):
         # A legacy NULL profile row is scoped by its actual profile file; a
         # shared/symlinked database cannot supply that unique ownership proof.
         return None

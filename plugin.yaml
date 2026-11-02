@@ -1,5 +1,5 @@
 name: h3rm35-push
-version: 0.1.0
+version: 0.2.0
 manifest_version: 1
 description: Optional metadata-only notifications for the H3rm35 iOS app.
 author: H3rm35
@@ -7,4 +7,5 @@ provides_tools: []
 provides_hooks:
   - post_llm_call
   - on_human_input_request
-python_dependencies: []
+python_dependencies:
+  - "pywin32>=311,<312; sys_platform == 'win32'"

@@ -55,7 +55,7 @@ async def capabilities(request: Request):
     authorize(request)
     try:
         host_id = await asyncio.to_thread(lambda: core.process_store().host_id())
-    except (OSError, ValueError, sqlite3.Error):
+    except (OSError, ValueError, sqlite3.Error, core.PrivateStorageError):
         raise HTTPException(503, "private_store_unavailable") from None
     return {"schema": 2, "host_id": host_id, "events": sorted(core.KINDS)}
 
@@ -66,6 +66,8 @@ async def register(request: Request):
     data = await body(request)
     try:
         return await asyncio.to_thread(lambda: core.process_store().register(data))
+    except core.PrivateStorageError:
+        raise HTTPException(503, "private_store_unavailable") from None
     except ValueError:
         raise HTTPException(409, "registration_rejected") from None
     except (OSError, sqlite3.Error):
@@ -77,6 +79,8 @@ async def unregister(binding_id: str, request: Request):
     authorize(request)
     try:
         await asyncio.to_thread(lambda: core.process_store().remove(binding_id))
+    except core.PrivateStorageError:
+        raise HTTPException(503, "private_store_unavailable") from None
     except ValueError:
         raise HTTPException(400, "invalid_identifier") from None
     except (OSError, sqlite3.Error):
