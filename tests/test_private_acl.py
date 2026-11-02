@@ -23,7 +23,7 @@ def test_macos_acl_or_ambiguous_metadata_fails_closed(monkeypatch,output):
         return SimpleNamespace(returncode=0,stdout=output)
     monkeypatch.setattr(core.subprocess,"run",run)
     with pytest.raises(ValueError): core.assert_no_extended_acl(Path("/private/store"))
-    assert calls[0][0]==["/bin/ls","-lde","--","/private/store"]
+    assert calls[0][0]==["/bin/ls","-lde","--",str(Path("/private/store"))]
     assert calls[0][1]["timeout"]==2 and not calls[0][1].get("shell",False)
     assert calls[0][1]["stderr"]==subprocess.DEVNULL
 

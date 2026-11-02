@@ -1,6 +1,7 @@
 """Bounded execution of actual pinned upstream source, without a running agent."""
 
 import ast
+import asyncio
 import contextvars
 import importlib.util
 import logging
@@ -26,7 +27,7 @@ def actual_functions(filename, names, namespace):
     path=UPSTREAM/filename
     if not path.is_file():
         pytest.skip("read-only upstream source fixture absent")
-    tree=ast.parse(path.read_text())
+    tree=ast.parse(path.read_text(encoding="utf-8"))
     nodes=[node for node in tree.body if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in names]
     assert {node.name for node in nodes}==set(names)
     exec(compile(ast.Module(body=nodes,type_ignores=[]),str(path),"exec"),namespace)
@@ -34,8 +35,16 @@ def actual_functions(filename, names, namespace):
 
 
 def test_actual_root_helpers_share_identity_across_profiles_and_custom_roots(tmp_path,monkeypatch):
-    native=tmp_path/"native"; native.mkdir()
-    custom=tmp_path/"custom"; custom.mkdir()
+    native=tmp_path/"native"
+    custom=tmp_path/"custom"
+    for path in (native, custom):
+        if os.name == "nt":
+            from h3rm35_push_plugin_test import windows_files as files
+            w = files.require_native()
+            current, _allowed, system = files._principals(w)
+            w.win32file.CreateDirectory(str(path), files._security_attributes(w, current, system, directory=True))
+        else:
+            path.mkdir()
     namespace={"Path":Path,"os":os,"_get_platform_default_hermes_home":lambda:native,
                "_expand_hermes_home":lambda value:Path(value),"_PINNED_PROCESS_HERMES_HOME":None,
                "_default_hermes_root_memo":None}
@@ -137,19 +146,23 @@ def test_actual_api_mount_function_loads_directory_route_and_gates_disabled(tmp_
     actual_functions("web_server_dashboard.py",["_plugin_api_mount_skip_reason","_mount_plugin_api_routes"],namespace)
     server.app=FastAPI()
     namespace["_mount_plugin_api_routes"]()
-    paths={route.path for route in server.app.routes}
-    assert {"/api/plugins/h3rm35-push/capabilities","/api/plugins/h3rm35-push/register",
-            "/api/plugins/h3rm35-push/registrations/{binding_id}"}.issubset(paths)
+    mounted = sys.modules["_h3rm35_push_host_core"]
+    monkeypatch.setattr(mounted,"supported_host",lambda:True)
+    monkeypatch.setattr(mounted,"process_store",lambda:Store(tmp_path/"push"))
+    async def status():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app),base_url="http://fixture") as client:
+            return (await client.get("/api/plugins/h3rm35-push/capabilities")).status_code
+    assert asyncio.run(status()) == 200
     enabled.clear()
     server.app=FastAPI()
     namespace["_mount_plugin_api_routes"]()
-    assert not any(route.path.startswith("/api/plugins/") for route in server.app.routes)
+    assert asyncio.run(status()) == 404
 
 
 def test_actual_context_registration_and_unload_stops_real_idle_worker(tmp_path,monkeypatch):
     import h3rm35_push_plugin_test as plugin
     path=UPSTREAM/"plugins.py"
-    tree=ast.parse(path.read_text())
+    tree=ast.parse(path.read_text(encoding="utf-8"))
     klass=next(node for node in tree.body if isinstance(node,ast.ClassDef) and node.name=="PluginContext")
     required={"__init__","_track","_track_callback","register_hook","on_unload"}
     methods=[node for node in klass.body if isinstance(node,ast.FunctionDef) and node.name in required]
